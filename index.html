@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chat Video Editor — V1</title>
+<style>
+:root{color-scheme:dark;--bg:#101318;--panel:#1a2029;--muted:#9eabbc;--accent:#72a7ff;--line:#303b49}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f4f7fb;font:15px system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:760px;margin:auto;padding:18px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:18px}.logo{background:#315fa8;border-radius:12px;padding:10px;font-size:20px}
+h1{font-size:21px;margin:0}p{color:var(--muted);line-height:1.45}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:15px;margin:13px 0}
+label{display:block;font-weight:600;margin:10px 0 6px}input,textarea,button{font:inherit}input[type=file],input[type=number],textarea{width:100%;background:#111720;color:white;border:1px solid var(--line);border-radius:10px;padding:11px}
+textarea{min-height:78px;resize:vertical}button{border:0;border-radius:11px;padding:12px 15px;background:var(--accent);color:#071326;font-weight:750;cursor:pointer;margin:5px 5px 5px 0}button:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#2b3543;color:#edf3fb}
+video{width:100%;max-height:340px;background:#080a0d;border-radius:12px;margin-top:10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.small{font-size:12px;color:var(--muted)}#status{white-space:pre-wrap;color:#c8d8ef;font-size:13px}#result{display:none}a{color:#9ec4ff}.pill{display:inline-block;background:#24354d;padding:4px 8px;border-radius:20px;font-size:12px;color:#c8dcff}
+@media(max-width:480px){main{padding:12px}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body><main>
+<div class="brand"><div class="logo">🎬</div><div><h1>Chat Video Editor</h1><div class="small">V1 · Free browser-based editing prototype</div></div></div>
+<p>Video upload karo, Hinglish mein command likho, aur browser mein MP4 export karo. Rendering tumhare phone par hoti hai—video kisi server par upload nahi hoti.</p>
+<div class="card">
+<label>1. Apni video select karo</label><input id="file" type="file" accept="video/*">
+<video id="preview" controls playsinline></video>
+<div class="small" id="fileInfo">Abhi koi video select nahi hui.</div>
+</div>
+<div class="card">
+<label>2. ChatGPT-style editing command</label>
+<textarea id="command" placeholder="Example: video ko 5 second se 20 second tak trim karo&#10;Example: video mute karo&#10;Example: video ko 720p mein resize karo"></textarea>
+<button id="understand" class="secondary">Command samjho</button>
+<div class="small" id="parsed">Abhi command samjhi nahi gayi.</div>
+<div class="grid">
+<div><label>Start (seconds)</label><input id="start" type="number" min="0" step=".1" value="0"></div>
+<div><label>End (seconds)</label><input id="end" type="number" min="0" step=".1" placeholder="Video ke end tak"></div>
+</div>
+<label><input id="mute" type="checkbox"> Audio mute karo</label>
+<label><input id="scale" type="checkbox"> 720p tak resize karo (portrait/landscape ratio preserve)</label>
+<button id="export" disabled>MP4 export karo</button>
+<div id="status">Pehle video select karo.</div>
+</div>
+<div class="card" id="result"><label>3. Tumhari edited video</label><video id="output" controls playsinline></video><p><a id="download" download="edited-video.mp4">⬇ Edited MP4 download karo</a></p></div>
+<div class="card"><b>V1 ki limits</b><p class="small">Abhi trim, mute aur 720p resize supported hain. Automatic scene understanding, AI object removal, cinematic VFX, music library aur advanced transitions abhi included nahi hain. Large videos phone ki memory ki wajah se fail ho sakti hain. App ko pehli baar internet chahiye FFmpeg engine load karne ke liye.</p></div>
+</main>
+<script type="module">
+import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+import { toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+const $=id=>document.getElementById(id);
+let ffmpeg, inputFile, inputUrl, outputUrl;
+function say(s){$('status').textContent=s}
+$('file').addEventListener('change',e=>{
+ inputFile=e.target.files[0]; if(!inputFile)return;
+ if(inputUrl)URL.revokeObjectURL(inputUrl);
+ inputUrl=URL.createObjectURL(inputFile);$('preview').src=inputUrl;
+ $('fileInfo').textContent=`${inputFile.name} · ${(inputFile.size/1024/1024).toFixed(1)} MB`;
+ $('export').disabled=false;$('result').style.display='none';say('Video ready. Command likho ya start/end set karo.');
+});
+function understand(){
+ const c=$('command').value.toLowerCase();let msg='Command check ki: ';
+ const range=c.match(/(?:from|se)\s*(\d+(?:\.\d+)?)\s*(?:to|tak)\s*(\d+(?:\.\d+)?)/);
+ if(range){$('start').value=range[1];$('end').value=range[2];msg+=`trim ${range[1]}s se ${range[2]}s tak. `;}
+ if(/mute|silent|audio hata|awaaz hata/.test(c)){$('mute').checked=true;msg+='audio mute. ';}
+ if(/720|resize|resolution|quality kam/.test(c)){$('scale').checked=true;msg+='720p resize. ';}
+ if(!range&&!/mute|silent|audio hata|awaaz hata|720|resize|resolution|quality kam/.test(c))msg+='Is command ka action V1 mein abhi supported nahi. Start/end, mute ya 720p use karo.';
+ $('parsed').textContent=msg;
+}
+$('understand').onclick=understand;
+async function loadEngine(){
+ if(ffmpeg?.loaded)return;
+ say('Editing engine load ho raha hai. Pehli baar internet aur thoda wait lagega...');
+ ffmpeg=new FFmpeg();
+ ffmpeg.on('log',({message})=>{if(message) say(message.slice(-500));});
+ const coreURL=await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js','text/javascript');
+ const wasmURL=await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm','application/wasm');
+ await ffmpeg.load({coreURL,wasmURL});
+}
+$('export').onclick=async()=>{
+ if(!inputFile)return;
+ $('export').disabled=true;$('result').style.display='none';
+ try{
+  await loadEngine();
+  const ext=(inputFile.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'');
+  const inName='input.'+ext;await ffmpeg.writeFile(inName,new Uint8Array(await inputFile.arrayBuffer()));
+  let args=['-i',inName];
+  const start=Math.max(0,Number($('start').value)||0);
+  const end=Number($('end').value);
+  if(end>0 && end<=start)throw new Error('End time, start time se bada hona chahiye.');
+  if(start>0)args=['-ss',String(start),...args];
+  if(end>0)args.push('-t',String(end-start));
+  if($('mute').checked)args.push('-an');
+  if($('scale').checked)args.push('-vf',"scale='if(gte(iw,ih),-2,min(720,iw))':'if(gte(ih,iw),-2,min(720,ih))'");
+  args.push('-c:v','libx264','-preset','ultrafast','-crf','23');
+  if(!$('mute').checked)args.push('-c:a','aac','-b:a','128k');
+  args.push('-movflags','+faststart','output.mp4');
+  say('Export shuru. Phone par video size ke hisaab se waqt lagega. App ko band mat karna.');
+  await ffmpeg.exec(args);
+  const data=await ffmpeg.readFile('output.mp4');
+  if(outputUrl)URL.revokeObjectURL(outputUrl);
+  outputUrl=URL.createObjectURL(new Blob([data.buffer],{type:'video/mp4'}));
+  $('output').src=outputUrl;$('download').href=outputUrl;$('result').style.display='block';
+  say('Export complete! Neeche download link dabao.');
+ }catch(err){say('Export nahi ho saka: '+(err?.message||err)+'\nChhoti MP4 video try karo, aur browser mein memory space khaali rakho.');}
+ finally{$('export').disabled=false;}
+};
+</script></body></html>
